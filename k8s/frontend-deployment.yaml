@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: innovatech
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          # <-- Reemplaza 286156185942 por tu ID de cuenta AWS (12 digitos)
+          image: 286156185942.dkr.ecr.us-east-1.amazonaws.com/innovatech-frontend:eks-v1
+          ports:
+            - containerPort: 80
+          # nginx (envsubst) usa estas variables para hacer de proxy hacia los backends.
+          # Coinciden con los nombres de los Services 'ventas' y 'despachos'.
+          env:
+            - name: DESPACHOS_HOST
+              value: "despachos"
+            - name: DESPACHOS_PORT
+              value: "8081"
+            - name: VENTAS_HOST
+              value: "ventas"
+            - name: VENTAS_PORT
+              value: "8082"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10

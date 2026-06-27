@@ -1,0 +1,132 @@
+name: CI/CD Innovatech EKS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  NAMESPACE: innovatech
+  ECR_FRONTEND: innovatech-frontend
+  ECR_VENTAS: innovatech-back-ventas
+  ECR_DESPACHOS: innovatech-back-despachos
+  ECR_DB: innovatech-db
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login a Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Definir tag de imagen (SHA corto)
+        run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      # ============ BUILD & PUSH (4 imagenes) ============
+      - name: Build & push FRONTEND
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_FRONTEND:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_FRONTEND:latest ./frontend
+          docker push $ECR_REGISTRY/$ECR_FRONTEND:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_FRONTEND:latest
+
+      - name: Build & push VENTAS
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_VENTAS:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_VENTAS:latest ./back-ventas
+          docker push $ECR_REGISTRY/$ECR_VENTAS:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_VENTAS:latest
+
+      - name: Build & push DESPACHOS
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_DESPACHOS:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_DESPACHOS:latest ./back-despachos
+          docker push $ECR_REGISTRY/$ECR_DESPACHOS:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_DESPACHOS:latest
+
+      - name: Build & push DB
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_DB:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_DB:latest ./db
+          docker push $ECR_REGISTRY/$ECR_DB:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_DB:latest
+
+      # ============ DEPLOY A EKS ============
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.29.0
+
+      - name: Configurar kubeconfig para EKS
+        env:
+          EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+        run: |
+          aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
+          kubectl config current-context
+
+      - name: Desplegar base (namespace, secret, MySQL)
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/mysql-secret.yaml
+          kubectl apply -f k8s/mysql-deployment.yaml
+          kubectl apply -f k8s/mysql-service.yaml
+          kubectl set image deployment/mysql mysql=$ECR_REGISTRY/$ECR_DB:$IMAGE_TAG -n $NAMESPACE
+          kubectl rollout status deployment/mysql -n $NAMESPACE --timeout=180s
+
+      - name: Desplegar VENTAS
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          kubectl apply -f k8s/ventas-deployment.yaml
+          kubectl apply -f k8s/ventas-service.yaml
+          kubectl set image deployment/ventas ventas=$ECR_REGISTRY/$ECR_VENTAS:$IMAGE_TAG -n $NAMESPACE
+          kubectl rollout status deployment/ventas -n $NAMESPACE --timeout=240s
+
+      - name: Desplegar DESPACHOS
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          kubectl apply -f k8s/despachos-deployment.yaml
+          kubectl apply -f k8s/despachos-service.yaml
+          kubectl set image deployment/despachos despachos=$ECR_REGISTRY/$ECR_DESPACHOS:$IMAGE_TAG -n $NAMESPACE
+          kubectl rollout status deployment/despachos -n $NAMESPACE --timeout=240s
+
+      - name: Desplegar FRONTEND
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          kubectl apply -f k8s/frontend-deployment.yaml
+          kubectl apply -f k8s/frontend-service.yaml
+          kubectl set image deployment/frontend frontend=$ECR_REGISTRY/$ECR_FRONTEND:$IMAGE_TAG -n $NAMESPACE
+          kubectl rollout status deployment/frontend -n $NAMESPACE --timeout=180s
+
+      - name: Aplicar HPA (autoscaling)
+        run: |
+          kubectl apply -f k8s/ventas-hpa.yaml
+          kubectl apply -f k8s/despachos-hpa.yaml
+          kubectl apply -f k8s/frontend-hpa.yaml
+
+      - name: Estado final del despliegue
+        run: |
+          echo "===== PODS =====" && kubectl get pods -n $NAMESPACE
+          echo "===== SERVICES =====" && kubectl get svc -n $NAMESPACE
+          echo "===== HPA =====" && kubectl get hpa -n $NAMESPACE || true

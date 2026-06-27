@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: despachos
+  namespace: innovatech
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: despachos
+  template:
+    metadata:
+      labels:
+        app: despachos
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox:1.36
+          command: ['sh','-c','until nc -z mysql 3306; do echo "esperando a mysql..."; sleep 2; done']
+      containers:
+        - name: despachos
+          # <-- Reemplaza 286156185942 por tu ID de cuenta AWS (12 digitos)
+          image: 286156185942.dkr.ecr.us-east-1.amazonaws.com/innovatech-back-despachos:eks-v1
+          ports:
+            - containerPort: 8081
+          env:
+            - name: DB_ENDPOINT
+              value: "mysql"
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_NAME
+              value: "innovatech"
+            - name: DB_USERNAME
+              value: "appuser"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: innovatech-secret
+                  key: MYSQL_PASSWORD
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /v3/api-docs
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /v3/api-docs
+              port: 8081
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 6

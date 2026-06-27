@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: innovatech
+spec:
+  # LoadBalancer => AWS crea automaticamente un ELB publico (requiere el
+  # etiquetado de subredes del Hito 3: kubernetes.io/role/elb = 1)
+  type: LoadBalancer
+  selector:
+    app: frontend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
